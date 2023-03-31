@@ -1,0 +1,173 @@
+---
+title: "Worldwide collaboration network"
+author: "Leandro G. Cosmo and Paulo R. Guimaraes Jr."
+date: "31/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This code builds and plots a worldwide collaboration network based on co-authorship of manuscripts. In this network, nodes represent authors from a given city, and nodes are linked if the authors co-authored the same manuscript. The weight of the links represent the number of co-authored manuscripts between two nodes.
+
+The worldwide collaboration network is built and plotted from the following steps:
+
+1.  The network is built from a dataset containing information about the authors from a given locality. In this particular dataset, each row corresponds to a manuscript, and each column to a municipality. The entries of the dataset, [manuscript, municipality], represent the number of authors of each municipality that co-authored a given manuscript.
+
+2.  The resulting network is plotted on a world map. For this step, we need an additional dataset containing the geographic coordinates from each locality that occur in the network. In our case, each locality correspond to a city.
+
+Below we provide a detailed guide on how to perform these two steps.
+
+## Building the worldwide collaboration network
+
+Our first step is to import the dataset that we will use to build the network. However, if the network is already built, this step can be skipped and the adjacency matrix of the network can be used directly.
+
+```{r, message=FALSE}
+library(here)
+d<-read.csv(here("src", "matriz_cidades.csv"), header=TRUE, sep=";")
+```
+
+In the above block of code we used the **read.csv** function from base **R** to import our dataset. As we previously mentioned, the dataset is formatted so that each row corresponds to a manuscript, and each column to a location. In our dataset each column corresponds to a municipality. Lets verify the first 5 rows and 5 columns of it:
+
+```{r}
+head(d[,1:5], 5)
+```
+
+The name of the columns contain a "." in it, so we need to remove those from the names first:
+
+```{r}
+colnames(d)<-gsub(pattern=".", replacement=" ", colnames(d), fixed=TRUE)
+```
+
+Now that we imported the dataset, we will create a function that builds the network. This function creates a network for the interactions among co-authors of different cities. To do so, the function performs the following four steps:
+
+\(1\) Create a list that will store matrices of interactions for each individual manuscript.
+
+\(2\) Subset the authors and their place of residence for each manuscript (each row of the data frame).
+
+\(3\) Creates a matrix of interactions between locations for each paper. A[i,j]=1 if author from location i collaborated with another one from location j. A[i,j]=0 otherwise.
+
+\(4\) Combines the matrices of interactions from each paper into a single global network of interactions. In this global network, the weights will correspond to the number of manuscripts co-authored.
+
+```{r}
+create_network<-function(df){
+  
+  # Step (1)
+  df[df==0]<-NA
+  l<-list() 
+  
+  for(i in 1:nrow(df)){
+    
+    # Step (2)
+    s<-as.numeric(df[i,])
+    names(s)<-colnames(df[i,])
+    
+    # Step (3)
+    A_i<-outer(s, s, FUN="+")
+    A_i[is.na(A_i)]<-0
+    A_i[A_i>0]<-1
+    l[[i]]<-A_i
+      
+  }
+  
+  # Step (4)
+  net<-Reduce("+", l)
+  diag(net)<-0
+  return(net)
+  
+}
+```
+
+We can now use the function to build the adjacency matrix of the network:
+
+```{r}
+A<-create_network(df=d)
+```
+
+With the adjacency matrix of the network we can proceed to the next step to plot it in a world map.
+
+## Plotting the worldwide collaboration network
+
+Here, our first step is to import a dataset containing the coordinates of each locality that occur in the network:
+
+```{r}
+loc<-read.csv(here("src", "coords_cidades.csv"), header=TRUE, sep=";")
+head(loc, 5)
+```
+
+Next, using this dataset we need to build a matrix of coordinates following the same order of rows of the dataset:
+
+```{r}
+coords_matrix<-matrix(data=NA, nrow=ncol(d), ncol=2)
+coords_matrix[,1]<-loc$long
+coords_matrix[,2]<-loc$lat
+
+head(coords_matrix, 5)
+```
+
+With the dataset of the geographic coordinates, we can proceed to import the shape file of the world map. This is provided by **maps** package and we use the **sf** package to format it so that we can later use the packages **ggplot2** and **ggnetwork** to plot simultaneously the map and the network.
+
+```{r, message=FALSE}
+library(sf)
+library(maps)
+
+world <- sf::st_as_sf(maps::map("world", plot = FALSE, fill = TRUE))
+```
+
+Next, we create the network object that will be used to plot it. This can be done using a combination of the **igraph** and **ggnetwork** packages. While **igraph** creates a network object from an adjacency matrix, **ggnetwork** use this network object to create a data frame that can then be passed to the plot functions in **ggplot2**.
+
+```{r, message=FALSE}
+library(igraph)
+library(ggnetwork)
+
+geo_net<-graph_from_adjacency_matrix(A, mode=c("undirected"), weighted=TRUE)
+geo_gg<-ggnetwork(geo_net, layout=coords_matrix, scale=FALSE)
+```
+
+In the above code, we set the **layout** argument to be equal to the matrix of geographical coordinates. This will position the nodes the network at these coordinates in the plot. The argument **scale=FALSE** is important otherwise the coordinates are transformed. The resulting data frame is as follows:
+
+```{r}
+head(geo_gg, 5)
+```
+
+The variables **x** and **y** in the data frame are precisely the position of the node, while the ones **xend** and **yend** are the coordinates of the end position of the links that start from this node.
+
+We can now use **ggplot2** to plot the world map and the network. The package **ggplot2** uses layers to plot each object. For instance, we can plot the layer corresponding only to the world map:
+
+```{r}
+ggplot()+
+  geom_sf(data=world, fill="antiquewhite", color="gray80")+
+  xlab("Longitude") + ylab("Latitude") + 
+  theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))
+```
+
+The color of filling of each country and the background colors can be changed by modifying the arguments **fill** in the **geom_sf()** function, and the argument **element_rect(fill = "desired_color")** in the **theme()** function. After the layer corresponding to the world map, we can add the layer corresponding to the edges and nodes of the network, using the functions **geom_edges()** and **geom_nodes()**:
+
+```{r}
+ggplot()+
+  geom_sf(data=world, fill="antiquewhite", color="gray80")+
+  geom_edges(data=geo_gg, aes(x=x, y=y, xend=xend, yend=yend, size=weight, alpha=weight), color="gray40", size=0.5, show.legend=FALSE, curvature=0.1) +
+  geom_nodes(data=geo_gg, aes(x, y), color="black", alpha=0.5, size=1.5, show.legend=FALSE)+
+  xlab("Longitude") + ylab("Latitude") + 
+  theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))
+```
+
+Each of these functions also have several arguments that can modified to match your personal taste such as the color, size, transparency, among others. We can also give some finishing touches, such as including a scale bar and a compass in the plot using the **ggspatial** package:
+
+```{r, message=FALSE, warning=FALSE}
+library(ggspatial)
+
+ggplot()+
+  geom_sf(data=world, fill="antiquewhite", color="gray80")+
+  geom_edges(data=geo_gg, aes(x=x, y=y, xend=xend, yend=yend, size=weight, alpha=weight), color="gray40", size=0.5, show.legend=FALSE, curvature=0.1) +
+  geom_nodes(data=geo_gg, aes(x, y), color="black", alpha=0.5, size=1.5, show.legend=FALSE)+
+  annotation_scale(location = "bl", width_hint = 0.5) + 
+  annotation_north_arrow(location = "bl", which_north = "true", pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"), style = north_arrow_fancy_orienteering) +
+  xlab("Longitude") + ylab("Latitude") + 
+  theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))
+```
+
+This particular network correspond to the worldwide collaboration network of the Guimaraes Lab, but the code can be modified to build any type of collaboration network. Furthermore, the steps performed in the section **Plotting the worldwide collaboration network** can also be used to plot any network on top of any map. All you need is the adjacency matrix of the network, the matrix of the geographical coordinates of each node, and the shape file corresponding to the map.
